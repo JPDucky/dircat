@@ -35,13 +35,13 @@ usage() {
     echo "  dircat py output.md                # Process all .py files and write to output.md"
     echo "  dircat output.md                   # Process all text files and write to output.md"
     echo "  dircat -d 2 txt                    # Process all .txt files recursively to depth 2"
-    echo "  dircat -e png,jpg,pdf              # Process all text files except png, jpg, and pdf files"
-    echo "  dircat -E node_modules,dist        # Exclude directories named node_modules or dist"
-    echo "  dircat -E test/apps/web            # Exclude only the specific test/apps/web directory"
-    echo "  dircat -E test/apps/web/**,!test/apps/web/ui  # Exclude test/apps/web except for ui subdirectory"
-    echo "  dircat -b                          # Process all files including binary files"
-    echo "  dircat -d 3 -E .git,target         # Process all files recursively to depth 3, excluding .git and target dirs"
-    echo "  dircat                             # Process all text files in current directory to stdout"
+    echo "  dircat -e png,jpg,pdf .            # Process all text files except png, jpg, and pdf files"
+    echo "  dircat -E node_modules,dist .      # Exclude directories named node_modules or dist"
+    echo "  dircat -E test/apps/web .          # Exclude only the specific test/apps/web directory"
+    echo "  dircat -E test/apps/web/**,!test/apps/web/ui .  # Exclude test/apps/web except for ui subdirectory"
+    echo "  dircat -b .                        # Process all files including binary files"
+    echo "  dircat -d 3 -E .git,target .       # Process all files recursively to depth 3, excluding .git and target dirs"
+    echo "  dircat .                           # Process all text files in current directory to stdout"
     exit 1
 }
 
@@ -97,11 +97,15 @@ done
 # Process collected non-option arguments
 case ${#NON_OPTION_ARGS[@]} in
     0)
-        # No arguments - use defaults
+        # No arguments - display help
+        usage
         ;;
     1)
-        # One argument - could be file extension or output file
-        if [[ "${NON_OPTION_ARGS[0]}" == *.* ]]; then
+        # One argument - could be file extension, output file, or '.'
+        if [ "${NON_OPTION_ARGS[0]}" = "." ]; then
+            # '.' means use defaults (process all files in current directory)
+            FILETYPE="*"
+        elif [[ "${NON_OPTION_ARGS[0]}" == *.* ]]; then
             # If it contains a dot, assume it's an output file
             OUTPUT_FILE="${NON_OPTION_ARGS[0]}"
         else
