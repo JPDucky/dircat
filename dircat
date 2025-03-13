@@ -24,6 +24,8 @@ usage() {
     echo "  file_extension         Type of files to process (default: all text files)"
     echo "  output_file            File to write output to (default: stdout)"
     echo
+    echo "Note: dircat requires a directory, file extension, or output file to run"
+    echo
     echo "Directory exclusion patterns:"
     echo "  dirName                Exclude directories named 'dirName' at any level"
     echo "  path/to/dir            Exclude only the specific directory at that path"
@@ -41,7 +43,7 @@ usage() {
     echo "  dircat -E test/apps/web/**,!test/apps/web/ui .  # Exclude test/apps/web except for ui subdirectory"
     echo "  dircat -b .                        # Process all files including binary files"
     echo "  dircat -d 3 -E .git,target .       # Process all files recursively to depth 3, excluding .git and target dirs"
-    echo "  dircat .                           # Process all text files in current directory to stdout"
+    echo "  dircat .                           # Process all text files in current directory"
     exit 1
 }
 
@@ -101,10 +103,12 @@ case ${#NON_OPTION_ARGS[@]} in
         usage
         ;;
     1)
-        # One argument - could be file extension, output file, or '.'
-        if [ "${NON_OPTION_ARGS[0]}" = "." ]; then
-            # '.' means use defaults (process all files in current directory)
+        # One argument - could be directory, file extension, or output file
+        if [ -d "${NON_OPTION_ARGS[0]}" ]; then
+            # If it's a directory, process all files in that directory
             FILETYPE="*"
+            # Change to that directory for processing
+            cd "${NON_OPTION_ARGS[0]}" || { echo "Error: Cannot change to directory ${NON_OPTION_ARGS[0]}" >&2; exit 1; }
         elif [[ "${NON_OPTION_ARGS[0]}" == *.* ]]; then
             # If it contains a dot, assume it's an output file
             OUTPUT_FILE="${NON_OPTION_ARGS[0]}"
