@@ -1,0 +1,349 @@
+#!/usr/bin/env bash
+
+# Set default values
+FILETYPE="*"
+OUTPUT_FILE=""
+RECURSE_DEPTH=0  # Default: no recursion
+RECURSE_FLAG=false
+EXCLUDE_TYPES=""
+EXCLUDE_DIRS=""
+INCLUDE_BINARY=false  # Default: exclude binary files
+
+# Display usage information
+usage() {
+    echo "Usage: dircat [options] [file_extension] [output_file]"
+    echo
+    echo "Options:"
+    echo "  -h, --help             Display this help message"
+    echo "  -d, --depth <N>        Recurse into directories to depth N (default: 1)"
+    echo "  -e, --exclude <types>  Exclude specified file types (comma-separated)"
+    echo "  -E, --exclude-dir <dirs> Exclude specified directories (comma-separated)"
+    echo "  -b, --binary           Include binary files (excluded by default)"
+    echo
+    echo "Arguments:"
+    echo "  file_extension         Type of files to process (default: all text files)"
+    echo "  output_file            File to write output to (default: stdout)"
+    echo
+    echo "Directory exclusion patterns:"
+    echo "  dirName                Exclude directories named 'dirName' at any level"
+    echo "  path/to/dir            Exclude only the specific directory at that path"
+    echo "  path/to/dir/*          Exclude immediate children of 'path/to/dir'"
+    echo "  path/to/dir/**         Exclude 'path/to/dir' and all its subdirectories"
+    echo "  !path/to/exception     Include this path even if a parent is excluded"
+    echo
+    echo "Examples:"
+    echo "  dircat py output.md                # Process all .py files and write to output.md"
+    echo "  dircat output.md                   # Process all text files and write to output.md"
+    echo "  dircat -d 2 txt                    # Process all .txt files recursively to depth 2"
+    echo "  dircat -e png,jpg,pdf              # Process all text files except png, jpg, and pdf files"
+    echo "  dircat -E node_modules,dist        # Exclude directories named node_modules or dist"
+    echo "  dircat -E test/apps/web            # Exclude only the specific test/apps/web directory"
+    echo "  dircat -E test/apps/web/**,!test/apps/web/ui  # Exclude test/apps/web except for ui subdirectory"
+    echo "  dircat -b                          # Process all files including binary files"
+    echo "  dircat -d 3 -E .git,target         # Process all files recursively to depth 3, excluding .git and target dirs"
+    echo "  dircat                             # Process all text files in current directory to stdout"
+    exit 1
+}
+
+# Process options and arguments
+NON_OPTION_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--help)
+            usage
+            ;;
+        -d|--depth)
+            RECURSE_FLAG=true
+            if [[ $# -gt 1 && "$2" =~ ^[0-9]+$ ]]; then
+                RECURSE_DEPTH="$2"
+                shift
+            else
+                RECURSE_DEPTH=1  # Default to 1 if no or invalid depth specified
+            fi
+            ;;
+        -e|--exclude)
+            if [[ $# -gt 1 ]]; then
+                EXCLUDE_TYPES="$2"
+                shift
+            else
+                echo "Error: --exclude requires a comma-separated list of file types" >&2
+                usage
+            fi
+            ;;
+        -E|--exclude-dir)
+            if [[ $# -gt 1 ]]; then
+                EXCLUDE_DIRS="$2"
+                shift
+            else
+                echo "Error: --exclude-dir requires a comma-separated list of directories" >&2
+                usage
+            fi
+            ;;
+        -b|--binary)
+            INCLUDE_BINARY=true
+            ;;
+        -*)
+            echo "Error: Unknown option: $1" >&2
+            usage
+            ;;
+        *)
+            # Collect non-option arguments to process later
+            NON_OPTION_ARGS+=("$1")
+            ;;
+    esac
+    shift
+done
+
+# Process collected non-option arguments
+case ${#NON_OPTION_ARGS[@]} in
+    0)
+        # No arguments - use defaults
+        ;;
+    1)
+        # One argument - could be file extension or output file
+        if [[ "${NON_OPTION_ARGS[0]}" == *.* ]]; then
+            # If it contains a dot, assume it's an output file
+            OUTPUT_FILE="${NON_OPTION_ARGS[0]}"
+        else
+            # Otherwise assume it's a file extension
+            FILETYPE="${NON_OPTION_ARGS[0]}"
+        fi
+        ;;
+    2)
+        # Two arguments - first is file extension, second is output file
+        FILETYPE="${NON_OPTION_ARGS[0]}"
+        OUTPUT_FILE="${NON_OPTION_ARGS[1]}"
+        ;;
+    *)
+        echo "Error: Too many arguments" >&2
+        usage
+        ;;
+esac
+
+# Function to write output
+write_output() {
+    if [ -n "$OUTPUT_FILE" ]; then
+        echo "$1" >> "$OUTPUT_FILE"
+    else
+        echo "$1"
+    fi
+}
+
+# Initialize output file if specified
+if [ -n "$OUTPUT_FILE" ]; then
+    > "$OUTPUT_FILE"
+fi
+
+# Function to check if a file is binary
+is_binary() {
+    local file="$1"
+    
+    # Check for common binary file extensions
+    local ext="${file##*.}"
+    local binary_exts="png jpg jpeg gif bmp tiff ico webp mp3 mp4 avi mkv mov flv wmv \
+                     wav ogg flac pdf doc docx xls xlsx ppt pptx zip rar tar gz bz2 7z \
+                     bin exe dll so o a out jar class pyc pyo"
+    
+    for bin_ext in $binary_exts; do
+        if [ "$ext" = "$bin_ext" ]; then
+            return 0  # Is binary
+        fi
+    done
+    
+    # Use file command if available for more thorough detection
+    if command -v file &> /dev/null; then
+        if file -b --mime-encoding "$file" | grep -q "binary"; then
+            return 0  # Is binary
+        fi
+    else
+        # Fallback method - check for null bytes
+        if grep -q -m 1 -P "[\x00]" "$file" 2>/dev/null; then
+            return 0  # Is binary
+        fi
+    fi
+    
+    return 1  # Not binary
+}
+
+# Function to check if a directory should be excluded
+is_dir_excluded() {
+    local dir_path="$1"
+    local relative_path="${dir_path#./}"  # Remove leading ./ if present
+    
+    if [ -z "$EXCLUDE_DIRS" ]; then
+        return 1  # Not excluded
+    fi
+    
+    # Convert comma-separated list to array
+    IFS=',' read -ra EXCLUDED_DIRS_ARRAY <<< "$EXCLUDE_DIRS"
+    
+    for excluded_dir in "${EXCLUDED_DIRS_ARRAY[@]}"; do
+        # Match exact directory name (basename)
+        if [ "$(basename "$dir_path")" = "$excluded_dir" ]; then
+            return 0  # Directory is excluded
+        fi
+        
+        # Match exact relative path (e.g., test/apps/web)
+        if [ "$relative_path" = "$excluded_dir" ]; then
+            return 0  # Directory is excluded
+        fi
+        
+        # Handle exclusion pattern with trailing /* (e.g., test/apps/*)
+        if [[ "$excluded_dir" == *"/*" ]]; then
+            local pattern_base="${excluded_dir%/*}"
+            if [[ "$relative_path" == "$pattern_base"/* ]]; then
+                return 0  # Directory is excluded
+            fi
+        fi
+        
+        # Check if the path is a direct subdirectory of excluded_dir
+        # (only if pattern ends with /**, meaning exclude this dir and all subdirs)
+        if [[ "$excluded_dir" == *"/**" ]]; then
+            local pattern_base="${excluded_dir%/**}"
+            if [[ "$relative_path" == "$pattern_base"/* ]]; then
+                return 0  # Directory is excluded
+            fi
+        fi
+        
+        # Handle negative patterns (include path even if a parent is excluded)
+        if [[ "$excluded_dir" == "!"* ]]; then
+            local include_pattern="${excluded_dir#!}"
+            if [[ "$relative_path" == "$include_pattern"/* || "$relative_path" == "$include_pattern" ]]; then
+                return 1  # Directory is explicitly included
+            fi
+        fi
+    done
+    
+    return 1  # Not excluded
+}
+
+# Function to check if a file type is excluded
+is_excluded() {
+    local filename="$1"
+    local extension="${filename##*.}"
+    
+    # Check user-specified exclusions
+    if [ -n "$EXCLUDE_TYPES" ]; then
+        # Convert comma-separated list to array
+        IFS=',' read -ra EXCLUDED_ARRAY <<< "$EXCLUDE_TYPES"
+        
+        for excluded in "${EXCLUDED_ARRAY[@]}"; do
+            if [ "$extension" = "$excluded" ]; then
+                return 0  # Excluded
+            fi
+        done
+    fi
+    
+    # Check for binary files unless explicitly included
+    if [ "$INCLUDE_BINARY" = "false" ]; then
+        if is_binary "$filename"; then
+            return 0  # Excluded because binary
+        fi
+    fi
+    
+    return 1  # Not excluded
+}
+
+# Keep track if we found any files
+FOUND_FILES=0
+
+# Function to process files in a directory
+process_directory() {
+    local current_dir="$1"
+    local current_depth="$2"
+    local path_prefix="$3"
+    
+    # Get absolute path of OUTPUT_FILE for comparison
+    local abs_output_file=""
+    if [ -n "$OUTPUT_FILE" ]; then
+        abs_output_file=$(realpath "$OUTPUT_FILE" 2>/dev/null || echo "$OUTPUT_FILE")
+    fi
+    
+    # Process files in current directory
+    for file in "$current_dir"/*.$FILETYPE; do
+        # Skip if no matching files
+        if [[ "$file" == "$current_dir/*.$FILETYPE" ]]; then
+            continue
+        fi
+        
+        # Only process regular files and skip the output file itself (using multiple comparison methods)
+        local abs_file=$(realpath "$file" 2>/dev/null || echo "$file")
+        if [[ -f "$file" && 
+              "$file" != "$OUTPUT_FILE" && 
+              "$file" != "./$OUTPUT_FILE" && 
+              "$abs_file" != "$abs_output_file" ]]; then
+              
+            # Skip excluded file types
+            if ! is_excluded "$file"; then
+                FOUND_FILES=1
+                
+                # Display filename with path prefix
+                local display_name="$path_prefix$(basename "$file")"
+                write_output "filename -> $display_name:"
+                write_output "---"
+                
+                # Read file content and handle errors
+                if ! content=$(cat "$file" 2>/dev/null); then
+                    write_output "Error: Could not read file $file"
+                else
+                    # Add file content
+                    if [ -n "$OUTPUT_FILE" ]; then
+                        cat "$file" >> "$OUTPUT_FILE"
+                    else
+                        cat "$file"
+                    fi
+                fi
+                
+                # Add separator
+                write_output "---"
+                write_output "---"
+            fi
+        fi
+    done
+    
+    # Recurse into subdirectories if needed
+    if [ "$RECURSE_FLAG" = true ] && [ "$current_depth" -lt "$RECURSE_DEPTH" ]; then
+        for dir in "$current_dir"/*/; do
+            if [ -d "$dir" ]; then
+                # Remove trailing slash
+                dir=${dir%/}
+                
+                # Get the relative path for exclusion checking
+                local rel_path="${dir#./}"
+                if [[ "$rel_path" == "$dir" ]]; then
+                    # If no ./ prefix, try to create relative path
+                    rel_path="${dir#$PWD/}"
+                    if [[ "$rel_path" == "$dir" ]]; then
+                        # If still no change, just use the path as is
+                        rel_path="$dir"
+                    fi
+                fi
+                
+                # Skip excluded directories
+                if ! is_dir_excluded "$rel_path"; then
+                    local new_prefix="$path_prefix$(basename "$dir")/"
+                    process_directory "$dir" $((current_depth + 1)) "$new_prefix"
+                fi
+            fi
+        done
+    fi
+}
+
+# Start processing from current directory
+process_directory "." 0 ""
+
+# Check if we processed any files
+if [ $FOUND_FILES -eq 0 ]; then
+    if [ "$FILETYPE" == "*" ]; then
+        echo "Warning: No files found." >&2
+    else
+        echo "Warning: No files matching *.$FILETYPE found." >&2
+    fi
+fi
+
+# Confirmation if writing to file
+if [ -n "$OUTPUT_FILE" ] && [ $FOUND_FILES -eq 1 ]; then
+    echo "All matching files have been concatenated into $OUTPUT_FILE" >&2
+fi
+
+exit 0
